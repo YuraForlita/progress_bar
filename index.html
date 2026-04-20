@@ -41,16 +41,21 @@
         const Icon = ({ name, className = "w-5 h-5" }) => {
             const [iconHtml, setIconHtml] = useState('');
             useEffect(() => {
-                const timer = setInterval(() => {
-                    if (window.lucide) {
+                const renderIcon = () => {
+                    if (window.lucide && window.lucide.icons[name]) {
                         const icon = window.lucide.icons[name];
-                        if (icon) {
-                            setIconHtml(icon.toSvg({ class: className }));
-                            clearInterval(timer);
-                        }
+                        setIconHtml(icon.toSvg({ class: className }));
+                        return true;
                     }
-                }, 100);
-                return () => clearInterval(timer);
+                    return false;
+                };
+
+                if (!renderIcon()) {
+                    const timer = setInterval(() => {
+                        if (renderIcon()) clearInterval(timer);
+                    }, 100);
+                    return () => clearInterval(timer);
+                }
             }, [name, className]);
             return <span className="inline-flex items-center justify-center" dangerouslySetInnerHTML={{ __html: iconHtml }} />;
         };
@@ -67,7 +72,7 @@
             const [newManualCategory, setNewManualCategory] = useState('');
             const [loading, setLoading] = useState(true);
 
-            // Firebase ключі (ваші ключі за замовчуванням)
+            // Firebase ключі за замовчуванням
             const defaultCfg = {
                 apiKey: "AIzaSyBS2l3YDALmcy55e74iv5SHYT4bC856A6o",
                 authDomain: "analizator-2a3da.firebaseapp.com",
@@ -99,7 +104,6 @@
                         setConfigInput(JSON.stringify(firebaseConfig, null, 2));
                     }
 
-                    // Переініціалізація, якщо вже є додаток
                     const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
                     const _auth = getAuth(app);
                     const _db = getFirestore(app);
@@ -116,7 +120,6 @@
                     onAuthStateChanged(_auth, setUser);
                 } catch (e) {
                     console.error("Firebase Init Error:", e);
-                    alert("Помилка ініціалізації Firebase. Перевірте конфігурацію.");
                 } finally {
                     setLoading(false);
                 }
@@ -129,8 +132,9 @@
             const appId = typeof __app_id !== 'undefined' ? __app_id : 'price-analyzer-app';
 
             useEffect(() => {
-                if (!user || !db) return;
+                if (!user || !db || !window.FirebaseSDK) return;
                 
+                const { collection, onSnapshot } = window.FirebaseSDK;
                 const suppliersCol = collection(db, 'artifacts', appId, 'users', user.uid, 'suppliers');
                 
                 const unsubscribe = onSnapshot(suppliersCol, 
@@ -139,7 +143,7 @@
                         setSuppliers(docs);
                         if (docs.length > 0 && !activeSupplierId) setActiveSupplierId(docs[0].id);
                     }, 
-                    (err) => console.error("Firestore Error:", err)
+                    (err) => console.error("Firestore Snapshot Error:", err)
                 );
                 return () => unsubscribe();
             }, [user, db, activeSupplierId]);
@@ -187,9 +191,11 @@
 
             const updateTargetColumn = async (val) => {
                 if (!activeSupplier || !db || !user) return;
-                const { doc, updateDoc } = window.FirebaseSDK;
-                const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'suppliers', activeSupplierId);
-                await updateDoc(ref, { targetColumn: val });
+                try {
+                    const { doc, updateDoc } = window.FirebaseSDK;
+                    const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'suppliers', activeSupplierId);
+                    await updateDoc(ref, { targetColumn: val });
+                } catch (e) { console.error(e); }
             };
 
             const addCategory = async (name) => {
@@ -197,21 +203,25 @@
                 const trimmedName = name.trim();
                 if (activeSupplier.categories.includes(trimmedName)) return;
 
-                const updated = [...activeSupplier.categories, trimmedName];
-                const { doc, updateDoc } = window.FirebaseSDK;
-                const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'suppliers', activeSupplierId);
-                await updateDoc(ref, { categories: updated });
-                setAnalysisResults(prev => prev.filter(c => c !== trimmedName));
-                setNewManualCategory('');
+                try {
+                    const updated = [...activeSupplier.categories, trimmedName];
+                    const { doc, updateDoc } = window.FirebaseSDK;
+                    const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'suppliers', activeSupplierId);
+                    await updateDoc(ref, { categories: updated });
+                    setAnalysisResults(prev => prev.filter(c => c !== trimmedName));
+                    setNewManualCategory('');
+                } catch (e) { console.error(e); }
             };
 
             const removeCategory = async (name) => {
                 if (!activeSupplier || !db || !user) return;
                 if (!window.confirm(`Видалити "${name}"?`)) return;
-                const updated = activeSupplier.categories.filter(c => c !== name);
-                const { doc, updateDoc } = window.FirebaseSDK;
-                const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'suppliers', activeSupplierId);
-                await updateDoc(ref, { categories: updated });
+                try {
+                    const updated = activeSupplier.categories.filter(c => c !== name);
+                    const { doc, updateDoc } = window.FirebaseSDK;
+                    const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'suppliers', activeSupplierId);
+                    await updateDoc(ref, { categories: updated });
+                } catch (e) { console.error(e); }
             };
 
             const handleFileUpload = (e) => {
@@ -224,18 +234,26 @@
                         const wb = XLSX.read(evt.target.result, { type: 'binary' });
                         const ws = wb.Sheets[wb.SheetNames[0]];
                         const data = XLSX.utils.sheet_to_json(ws);
+                        if (data.length === 0) return;
+                        
                         const targetKey = activeSupplier.targetColumn?.toLowerCase();
                         const key = Object.keys(data[0] || {}).find(k => {
                             if (targetKey && k.toLowerCase() === targetKey) return true;
                             return ['категорія', 'category', 'група'].some(s => k.toLowerCase().includes(s));
                         });
+                        
                         if (!key) {
-                            alert(`Стовпець не знайдено.`);
+                            alert(`Стовпець "${activeSupplier.targetColumn}" не знайдено у файлі.`);
                             return;
                         }
+                        
                         const found = [...new Set(data.map(r => r[key]?.toString().trim()).filter(Boolean))];
                         setAnalysisResults(found.filter(c => !activeSupplier.categories.includes(c)));
-                    } catch (err) { console.error(err); } finally { setIsAnalyzing(false); }
+                    } catch (err) { 
+                        console.error(err); 
+                    } finally { 
+                        setIsAnalyzing(false); 
+                    }
                 };
                 reader.readAsBinaryString(file);
             };
@@ -270,14 +288,16 @@
                     </header>
 
                     <div className="flex flex-wrap gap-2 mb-6 border-b">
-                        {suppliers.map(s => (
+                        {suppliers.length > 0 ? suppliers.map(s => (
                             <div key={s.id} className="relative group">
                                 <button onClick={() => setActiveSupplierId(s.id)} className={`px-6 py-3 font-semibold text-sm rounded-t-xl border-x border-t transition-all ${activeSupplierId === s.id ? 'bg-white text-indigo-600 border-slate-200 -mb-px shadow-sm' : 'text-slate-400 border-transparent hover:bg-slate-100'}`}>
                                     {s.name}
                                 </button>
                                 <button onClick={() => removeSupplier(s.id)} className="absolute -top-1 -right-1 bg-red-100 text-red-500 p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity shadow-sm"><Icon name="X" className="w-3 h-3" /></button>
                             </div>
-                        ))}
+                        )) : (
+                            <p className="py-2 text-slate-400 text-sm">Постачальників поки немає</p>
+                        )}
                     </div>
 
                     {activeSupplier ? (
@@ -288,20 +308,20 @@
                                         <h2 className="font-bold flex items-center gap-2 italic text-slate-700">
                                             <Icon name="Settings" className="text-indigo-500" /> База відборів
                                         </h2>
-                                        <span className="text-xs bg-indigo-100 text-indigo-600 px-2 py-1 rounded-full font-bold">{activeSupplier.categories.length}</span>
+                                        <span className="text-xs bg-indigo-100 text-indigo-600 px-2 py-1 rounded-full font-bold">{activeSupplier.categories?.length || 0}</span>
                                     </div>
                                     <div className="flex gap-2 mb-4">
                                         <input value={newManualCategory} onChange={e => setNewManualCategory(e.target.value)} onKeyDown={e => e.key === 'Enter' && addCategory(newManualCategory)} className="flex-1 px-4 py-2 bg-slate-50 border rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="Додати вручну..." />
                                         <button onClick={() => addCategory(newManualCategory)} className="bg-indigo-50 text-indigo-600 p-2 rounded-xl border border-indigo-100 hover:bg-indigo-100 transition-colors"><Icon name="Plus" /></button>
                                     </div>
                                     <div className="flex-1 overflow-y-auto custom-scrollbar space-y-2 pr-1">
-                                        {activeSupplier.categories.length === 0 ? (
+                                        {!activeSupplier.categories || activeSupplier.categories.length === 0 ? (
                                             <div className="flex flex-col items-center justify-center h-full opacity-40">
                                                 <Icon name="Inbox" className="w-12 h-12 mb-2" />
                                                 <p className="text-sm text-center">Тут з'являться категорії,<br/>які ви додасте</p>
                                             </div>
                                         ) : (
-                                            activeSupplier.categories.sort().map(c => (
+                                            [...activeSupplier.categories].sort().map(c => (
                                                 <div key={c} className="flex justify-between items-center p-3 bg-slate-50 border border-transparent hover:border-slate-200 rounded-xl group transition-all">
                                                     <span className="text-sm font-medium pr-2 text-slate-700">{c}</span>
                                                     <button onClick={() => removeCategory(c)} className="text-slate-300 hover:text-red-500 p-1.5 hover:bg-red-50 rounded-lg transition-all opacity-0 group-hover:opacity-100">
@@ -313,25 +333,27 @@
                                     </div>
                                 </div>
                                 <div className="bg-white rounded-2xl shadow-sm border p-6">
-                                    <h2 className="font-bold mb-4 flex items-center gap-2 italic text-slate-700"><Icon name="Hash" className="text-indigo-500" /> Стовпець в Excel</h2>
-                                    <input value={activeSupplier.targetColumn || ''} onChange={e => updateTargetColumn(e.target.value)} className="w-full px-4 py-2 bg-slate-50 border rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="Наприклад: Категорія" />
+                                    <h2 className="font-bold mb-4 flex items-center gap-2 italic text-slate-700"><Icon name="Hash" className="text-indigo-500" /> Налаштування стовпця</h2>
+                                    <p className="text-xs text-slate-400 mb-2 font-medium uppercase tracking-wider">Назва колонки в Excel для аналізу</p>
+                                    <input value={activeSupplier.targetColumn || ''} onChange={e => updateTargetColumn(e.target.value)} className="w-full px-4 py-3 bg-slate-50 border rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none font-medium" placeholder="Наприклад: Категорія" />
                                 </div>
                             </div>
                             <div className="space-y-6">
                                 <div className="bg-white rounded-2xl shadow-sm border p-6">
-                                    <h2 className="font-bold mb-4 flex items-center gap-2 italic text-slate-700"><Icon name="Upload" className="text-indigo-500" /> Аналіз прайсу</h2>
+                                    <h2 className="font-bold mb-4 flex items-center gap-2 italic text-slate-700"><Icon name="Upload" className="text-indigo-500" /> Аналіз нового прайсу</h2>
                                     <div className="relative border-2 border-dashed border-slate-200 rounded-2xl p-8 text-center hover:bg-indigo-50 hover:border-indigo-300 transition-all group cursor-pointer">
                                         <input type="file" accept=".xlsx,.xls" onChange={handleFileUpload} className="absolute inset-0 opacity-0 cursor-pointer" />
                                         <Icon name="Upload" className="mx-auto mb-2 text-indigo-400 group-hover:scale-110 transition-transform" />
-                                        <p className="text-sm font-bold text-slate-600">Оберіть Excel файл</p>
+                                        <p className="text-sm font-bold text-slate-600">Оберіть файл Excel</p>
+                                        <p className="text-xs text-slate-400 mt-1">Аналізуємо колонку: <span className="text-indigo-600 font-bold">"{activeSupplier.targetColumn}"</span></p>
                                     </div>
                                 </div>
-                                <div className="bg-white rounded-2xl shadow-sm border p-6 flex flex-col min-h-[300px]">
+                                <div className="bg-white rounded-2xl shadow-sm border p-6 flex flex-col min-h-[350px]">
                                     <div className="flex justify-between items-center mb-4">
                                         <h2 className="font-bold flex items-center gap-2 italic text-slate-700">
-                                            <Icon name="AlertCircle" className="text-amber-500" /> Нові: {analysisResults.length}
+                                            <Icon name="AlertCircle" className="text-amber-500" /> Нові категорії: {analysisResults.length}
                                         </h2>
-                                        {analysisResults.length > 0 && <button onClick={() => setAnalysisResults([])} className="text-xs text-slate-400">Очистити</button>}
+                                        {analysisResults.length > 0 && <button onClick={() => setAnalysisResults([])} className="text-xs text-slate-400 hover:text-red-500 font-bold">Очистити</button>}
                                     </div>
                                     <div className="flex-1 overflow-y-auto space-y-2 custom-scrollbar pr-1">
                                         {isAnalyzing ? (
@@ -339,7 +361,7 @@
                                         ) : analysisResults.length === 0 ? (
                                             <div className="flex flex-col items-center justify-center h-full opacity-40 text-center text-sm px-4">
                                                 <Icon name="Search" className="w-10 h-10 mb-2" />
-                                                <p>Нових категорій не знайдено.<br/>Завантажте файл для порівняння.</p>
+                                                <p>Завантажте прайс, щоб побачити категорії, яких ще немає у вашій базі</p>
                                             </div>
                                         ) : (
                                             analysisResults.map(c => (
@@ -347,7 +369,7 @@
                                                     <span className="text-sm font-bold text-amber-900">{c}</span>
                                                     <div className="flex gap-1">
                                                         <button onClick={() => setAnalysisResults(prev => prev.filter(i => i !== c))} className="p-1.5 text-amber-400 hover:text-amber-600"><Icon name="X" className="w-4 h-4" /></button>
-                                                        <button onClick={() => addCategory(c)} className="bg-indigo-600 text-white p-1.5 rounded-lg shadow-sm"><Icon name="Check" className="w-4 h-4" /></button>
+                                                        <button onClick={() => addCategory(c)} className="bg-indigo-600 text-white p-1.5 rounded-lg shadow-sm hover:bg-indigo-700"><Icon name="Check" className="w-4 h-4" /></button>
                                                     </div>
                                                 </div>
                                             ))
@@ -360,7 +382,8 @@
                         <div className="text-center py-20 bg-white rounded-3xl border shadow-sm flex flex-col items-center">
                             <Icon name="Users" className="w-16 h-16 mb-4 text-indigo-100" />
                             <h2 className="text-xl font-bold text-slate-800">Оберіть постачальника</h2>
-                            <button onClick={() => setIsAddingSupplier(true)} className="mt-4 bg-indigo-600 text-white px-8 py-3 rounded-2xl font-bold shadow-lg">Створити нового</button>
+                            <p className="text-slate-400 mt-1">або створіть нового для початку роботи</p>
+                            <button onClick={() => setIsAddingSupplier(true)} className="mt-6 bg-indigo-600 text-white px-8 py-3 rounded-2xl font-bold shadow-lg hover:bg-indigo-700 transition-all">Додати постачальника</button>
                         </div>
                     )}
 
