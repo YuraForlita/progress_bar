@@ -27,15 +27,15 @@
         // Використовуємо ES модулі безпосередньо в браузері
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
-        import { getFirestore, doc, setDoc, collection, onSnapshot, updateDoc } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, collection, onSnapshot, updateDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
         // Робимо Firebase доступним глобально для Babel скрипту
-        window.FirebaseSDK = { initializeApp, getAuth, signInAnonymously, onAuthStateChanged, getFirestore, doc, setDoc, collection, onSnapshot, updateDoc };
+        window.FirebaseSDK = { initializeApp, getAuth, signInAnonymously, onAuthStateChanged, getFirestore, doc, setDoc, collection, onSnapshot, updateDoc, deleteDoc };
     </script>
 
     <script type="text/babel">
         const { useState, useEffect, useMemo } = React;
-        const { initializeApp, getAuth, signInAnonymously, onAuthStateChanged, getFirestore, doc, setDoc, collection, onSnapshot, updateDoc } = window.FirebaseSDK;
+        const { initializeApp, getAuth, signInAnonymously, onAuthStateChanged, getFirestore, doc, setDoc, collection, onSnapshot, updateDoc, deleteDoc } = window.FirebaseSDK;
 
         // Конфігурація Firebase
         const firebaseConfig = {
@@ -119,6 +119,7 @@
                     await setDoc(doc(db, 'artifacts', currentAppId, 'users', user.uid, 'suppliers', id), {
                         name: newSupplierName,
                         categories: [],
+                        targetColumn: 'категорія', // дефолтна назва стовпця
                         updatedAt: new Date().toISOString()
                     });
                     setActiveSupplierId(id);
@@ -127,12 +128,27 @@
                 } catch (e) { console.error(e); }
             };
 
+            const removeSupplier = async (id) => {
+                if (!confirm('Ви впевнені, що хочете видалити цього постачальника?')) return;
+                try {
+                    await deleteDoc(doc(db, 'artifacts', currentAppId, 'users', user.uid, 'suppliers', id));
+                    if (activeSupplierId === id) setActiveSupplierId(null);
+                } catch (e) { console.error(e); }
+            };
+
+            const updateTargetColumn = async (val) => {
+                if (!activeSupplier) return;
+                const ref = doc(db, 'artifacts', currentAppId, 'users', user.uid, 'suppliers', activeSupplierId);
+                await updateDoc(ref, { targetColumn: val });
+            };
+
             const addCategory = async (name) => {
                 if (!activeSupplier || !name.trim() || activeSupplier.categories.includes(name)) return;
                 const updated = [...activeSupplier.categories, name];
                 const ref = doc(db, 'artifacts', currentAppId, 'users', user.uid, 'suppliers', activeSupplierId);
                 await updateDoc(ref, { categories: updated });
                 setAnalysisResults(prev => prev.filter(c => c !== name));
+                setNewManualCategory('');
             };
 
             const removeCategory = async (name) => {
@@ -152,11 +168,17 @@
                         const ws = wb.Sheets[wb.SheetNames[0]];
                         const data = XLSX.utils.sheet_to_json(ws);
                         const firstRow = data[0] || {};
-                        const key = Object.keys(firstRow).find(k => 
-                            ['категорія', 'category', 'група', 'тип'].some(s => k.toLowerCase().includes(s))
-                        );
+                        
+                        // Шукаємо вказаний стовпець або пробуємо дефолтні варіанти
+                        const targetKey = activeSupplier.targetColumn?.toLowerCase();
+                        const key = Object.keys(firstRow).find(k => {
+                            if (targetKey && k.toLowerCase() === targetKey) return true;
+                            if (!targetKey) return ['категорія', 'category', 'група', 'тип'].some(s => k.toLowerCase().includes(s));
+                            return false;
+                        });
+
                         if (!key) {
-                            alert('Колонку з категоріями не знайдено');
+                            alert(`Стовпець "${activeSupplier.targetColumn}" не знайдено у файлі.`);
                             setIsAnalyzing(false);
                             return;
                         }
@@ -197,34 +219,50 @@
 
                     <div className="flex flex-wrap gap-2 mb-6 border-b">
                         {suppliers.map(s => (
-                            <button key={s.id} onClick={() => setActiveSupplierId(s.id)} className={`px-6 py-3 font-semibold text-sm rounded-t-xl border-x border-t transition-all ${activeSupplierId === s.id ? 'bg-white text-indigo-600 border-slate-200 -mb-px shadow-sm' : 'text-slate-400 border-transparent hover:bg-slate-100'}`}>
-                                {s.name}
-                            </button>
+                            <div key={s.id} className="relative group">
+                                <button onClick={() => setActiveSupplierId(s.id)} className={`px-6 py-3 font-semibold text-sm rounded-t-xl border-x border-t transition-all ${activeSupplierId === s.id ? 'bg-white text-indigo-600 border-slate-200 -mb-px shadow-sm' : 'text-slate-400 border-transparent hover:bg-slate-100'}`}>
+                                    {s.name}
+                                </button>
+                                <button onClick={() => removeSupplier(s.id)} className="absolute -top-1 -right-1 bg-red-100 text-red-500 p-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity shadow-sm"><Icon name="X" className="w-3 h-3" /></button>
+                            </div>
                         ))}
                     </div>
 
                     {activeSupplier ? (
                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                            <div className="bg-white rounded-2xl shadow-sm border p-6 flex flex-col h-[600px]">
-                                <h2 className="font-bold mb-4 flex items-center justify-between italic text-slate-700">
-                                    <span className="flex items-center gap-2"><Icon name="Settings" className="text-indigo-500" /> Ваша база відборів</span>
-                                    <span className="text-xs bg-indigo-100 text-indigo-600 px-2 py-1 rounded-full not-italic">{activeSupplier.categories.length} категорій</span>
-                                </h2>
-                                <div className="flex gap-2 mb-4">
-                                    <input value={newManualCategory} onChange={e => setNewManualCategory(e.target.value)} onKeyDown={e => e.key === 'Enter' && addCategory(newManualCategory)} className="flex-1 px-4 py-2 bg-slate-50 border rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all" placeholder="Вписати категорію вручну..." />
-                                    <button onClick={() => addCategory(newManualCategory)} className="bg-indigo-50 text-indigo-600 p-2 rounded-xl border border-indigo-100 hover:bg-indigo-100 transition-colors"><Icon name="Plus" /></button>
+                            <div className="space-y-6">
+                                <div className="bg-white rounded-2xl shadow-sm border p-6 flex flex-col h-[500px]">
+                                    <h2 className="font-bold mb-4 flex items-center justify-between italic text-slate-700">
+                                        <span className="flex items-center gap-2"><Icon name="Settings" className="text-indigo-500" /> База відборів</span>
+                                        <span className="text-xs bg-indigo-100 text-indigo-600 px-2 py-1 rounded-full not-italic">{activeSupplier.categories.length} категорій</span>
+                                    </h2>
+                                    <div className="flex gap-2 mb-4">
+                                        <input value={newManualCategory} onChange={e => setNewManualCategory(e.target.value)} onKeyDown={e => e.key === 'Enter' && addCategory(newManualCategory)} className="flex-1 px-4 py-2 bg-slate-50 border rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all" placeholder="Вписати категорію вручну..." />
+                                        <button onClick={() => addCategory(newManualCategory)} className="bg-indigo-50 text-indigo-600 p-2 rounded-xl border border-indigo-100 hover:bg-indigo-100 transition-colors"><Icon name="Plus" /></button>
+                                    </div>
+                                    <div className="flex-1 overflow-y-auto custom-scrollbar space-y-2 pr-1">
+                                        {activeSupplier.categories.length === 0 ? (
+                                            <p className="text-center text-slate-400 mt-10 text-sm">Тут з'являться ваші збережені категорії</p>
+                                        ) : (
+                                            activeSupplier.categories.map(c => (
+                                                <div key={c} className="flex justify-between items-center p-3 bg-slate-50 border border-transparent hover:border-slate-200 rounded-xl group transition-all">
+                                                    <span className="text-sm font-medium pr-2">{c}</span>
+                                                    <button onClick={() => removeCategory(c)} className="text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all p-1 hover:bg-red-50 rounded-lg"><Icon name="Trash2" className="w-4 h-4" /></button>
+                                                </div>
+                                            ))
+                                        )}
+                                    </div>
                                 </div>
-                                <div className="flex-1 overflow-y-auto custom-scrollbar space-y-2">
-                                    {activeSupplier.categories.length === 0 ? (
-                                        <p className="text-center text-slate-400 mt-10 text-sm">Тут з'являться ваші збережені категорії</p>
-                                    ) : (
-                                        activeSupplier.categories.map(c => (
-                                            <div key={c} className="flex justify-between p-3 bg-slate-50 border border-transparent hover:border-slate-200 rounded-xl group transition-all">
-                                                <span className="text-sm font-medium">{c}</span>
-                                                <button onClick={() => removeCategory(c)} className="text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all"><Icon name="Trash2" className="w-4 h-4" /></button>
-                                            </div>
-                                        ))
-                                    )}
+                                
+                                <div className="bg-white rounded-2xl shadow-sm border p-6">
+                                    <h2 className="font-bold mb-4 flex items-center gap-2 italic text-slate-700"><Icon name="Hash" className="text-indigo-500" /> Налаштування стовпця</h2>
+                                    <p className="text-xs text-slate-400 mb-2">Вкажіть назву колонки в Excel, яку потрібно аналізувати</p>
+                                    <input 
+                                        value={activeSupplier.targetColumn || ''} 
+                                        onChange={e => updateTargetColumn(e.target.value)}
+                                        className="w-full px-4 py-2 bg-slate-50 border rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none" 
+                                        placeholder="Наприклад: Категорія або Category" 
+                                    />
                                 </div>
                             </div>
 
@@ -235,14 +273,19 @@
                                         <input type="file" accept=".xlsx,.xls" onChange={handleFileUpload} className="absolute inset-0 opacity-0 cursor-pointer" />
                                         <Icon name="Upload" className="mx-auto mb-2 text-indigo-400 group-hover:scale-110 transition-transform" />
                                         <p className="text-sm font-bold text-slate-600">Натисніть або перетягніть .xlsx файл</p>
-                                        <p className="text-xs text-slate-400 mt-1">Ми порівняємо категорії з вашою базою</p>
+                                        <p className="text-xs text-slate-400 mt-1">Шукаємо нове в стовпці: <span className="font-bold text-indigo-600">"{activeSupplier.targetColumn || 'категорія'}"</span></p>
                                     </div>
                                 </div>
                                 <div className="bg-white rounded-2xl shadow-sm border p-6 flex flex-col min-h-[300px]">
-                                    <h2 className="font-bold mb-4 flex items-center gap-2 italic text-slate-700">
-                                        <Icon name="AlertCircle" className="text-amber-500" /> 
-                                        Знайдено нових: {analysisResults.length}
-                                    </h2>
+                                    <div className="flex justify-between items-center mb-4">
+                                        <h2 className="font-bold flex items-center gap-2 italic text-slate-700">
+                                            <Icon name="AlertCircle" className="text-amber-500" /> 
+                                            Знайдено нових: {analysisResults.length}
+                                        </h2>
+                                        {analysisResults.length > 0 && (
+                                            <button onClick={() => setAnalysisResults([])} className="text-xs text-slate-400 hover:text-slate-600">Очистити</button>
+                                        )}
+                                    </div>
                                     <div className="flex-1 overflow-y-auto space-y-2 custom-scrollbar">
                                         {isAnalyzing ? (
                                             <p className="text-center text-slate-400 mt-10">Обробка файлу...</p>
@@ -250,9 +293,12 @@
                                             <p className="text-center text-slate-400 mt-10 text-sm">Завантажте файл, щоб знайти категорії, яких ще немає у вашому списку</p>
                                         ) : (
                                             analysisResults.map(c => (
-                                                <div key={c} className="flex justify-between items-center p-3 bg-amber-50 border border-amber-100 rounded-xl hover:shadow-sm transition-shadow">
+                                                <div key={c} className="flex justify-between items-center p-3 bg-amber-50 border border-amber-100 rounded-xl hover:shadow-sm transition-shadow group">
                                                     <span className="text-sm font-bold text-amber-900">{c}</span>
-                                                    <button onClick={() => addCategory(c)} className="bg-amber-500 hover:bg-amber-600 text-white p-1.5 rounded-lg transition-colors shadow-sm"><Icon name="Plus" className="w-4 h-4" /></button>
+                                                    <div className="flex gap-1">
+                                                        <button onClick={() => setAnalysisResults(prev => prev.filter(item => item !== c))} className="p-1.5 text-amber-300 hover:text-amber-500 rounded-lg transition-colors"><Icon name="X" className="w-4 h-4" /></button>
+                                                        <button onClick={() => addCategory(c)} className="bg-amber-500 hover:bg-amber-600 text-white p-1.5 rounded-lg transition-colors shadow-sm"><Icon name="Plus" className="w-4 h-4" /></button>
+                                                    </div>
                                                 </div>
                                             ))
                                         )}
