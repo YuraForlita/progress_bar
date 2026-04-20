@@ -23,16 +23,21 @@
 <body class="bg-slate-50 text-slate-900 font-sans">
     <div id="root"></div>
 
-    <script type="text/babel">
-        const { useState, useEffect, useMemo } = React;
-        
-        // Firebase modules from CDN
+    <script type="module">
+        // Використовуємо ES модулі безпосередньо в браузері
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
         import { getFirestore, doc, setDoc, collection, onSnapshot, updateDoc } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
-        // Потрібно замінити ці дані на ваші власні з Firebase Console, 
-        // якщо ви запускаєте це поза середовищем Canvas
+        // Робимо Firebase доступним глобально для Babel скрипту
+        window.FirebaseSDK = { initializeApp, getAuth, signInAnonymously, onAuthStateChanged, getFirestore, doc, setDoc, collection, onSnapshot, updateDoc };
+    </script>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
+        const { initializeApp, getAuth, signInAnonymously, onAuthStateChanged, getFirestore, doc, setDoc, collection, onSnapshot, updateDoc } = window.FirebaseSDK;
+
+        // Конфігурація Firebase
         const firebaseConfig = {
           apiKey: "AIzaSyBS2l3YDALmcy55e74iv5SHYT4bC856A6o",
           authDomain: "analizator-2a3da.firebaseapp.com",
@@ -43,21 +48,25 @@
           measurementId: "G-NL31X68D2N"
         };
 
-        // Спроба отримати конфіг з оточення Canvas або використовувати дефолт
         const finalConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : firebaseConfig;
         const app = initializeApp(finalConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
         const currentAppId = typeof __app_id !== 'undefined' ? __app_id : 'price-analyzer-external';
 
-        // Простий проксі для іконок Lucide в React
         const Icon = ({ name, className = "w-5 h-5" }) => {
             const [iconHtml, setIconHtml] = useState('');
             useEffect(() => {
-                if (window.lucide) {
-                    const icon = window.lucide.icons[name];
-                    if (icon) setIconHtml(icon.toSvg({ class: className }));
-                }
+                const timer = setInterval(() => {
+                    if (window.lucide) {
+                        const icon = window.lucide.icons[name];
+                        if (icon) {
+                            setIconHtml(icon.toSvg({ class: className }));
+                            clearInterval(timer);
+                        }
+                    }
+                }, 100);
+                return () => clearInterval(timer);
             }, [name, className]);
             return <span dangerouslySetInnerHTML={{ __html: iconHtml }} />;
         };
@@ -78,7 +87,7 @@
                     if (u) {
                         setUser(u);
                     } else {
-                        signInAnonymously(auth).catch(console.error);
+                        signInAnonymously(auth).catch(err => console.error("Auth Error:", err));
                     }
                 });
                 return () => unsubscribeAuth();
@@ -93,7 +102,7 @@
                     if (docs.length > 0 && !activeSupplierId) setActiveSupplierId(docs[0].id);
                     setLoading(false);
                 }, (err) => {
-                    console.error(err);
+                    console.error("Firestore Error:", err);
                     setLoading(false);
                 });
                 return () => unsubscribe();
@@ -106,14 +115,16 @@
             const addSupplier = async () => {
                 if (!newSupplierName.trim() || !user) return;
                 const id = Date.now().toString();
-                await setDoc(doc(db, 'artifacts', currentAppId, 'users', user.uid, 'suppliers', id), {
-                    name: newSupplierName,
-                    categories: [],
-                    updatedAt: new Date().toISOString()
-                });
-                setActiveSupplierId(id);
-                setNewSupplierName('');
-                setIsAddingSupplier(false);
+                try {
+                    await setDoc(doc(db, 'artifacts', currentAppId, 'users', user.uid, 'suppliers', id), {
+                        name: newSupplierName,
+                        categories: [],
+                        updatedAt: new Date().toISOString()
+                    });
+                    setActiveSupplierId(id);
+                    setNewSupplierName('');
+                    setIsAddingSupplier(false);
+                } catch (e) { console.error(e); }
             };
 
             const addCategory = async (name) => {
@@ -136,21 +147,26 @@
                 setIsAnalyzing(true);
                 const reader = new FileReader();
                 reader.onload = (evt) => {
-                    const wb = XLSX.read(evt.target.result, { type: 'binary' });
-                    const ws = wb.Sheets[wb.SheetNames[0]];
-                    const data = XLSX.utils.sheet_to_json(ws);
-                    const firstRow = data[0] || {};
-                    const key = Object.keys(firstRow).find(k => 
-                        ['категорія', 'category', 'група', 'тип'].some(s => k.toLowerCase().includes(s))
-                    );
-                    if (!key) {
-                        alert('Колонку не знайдено');
+                    try {
+                        const wb = XLSX.read(evt.target.result, { type: 'binary' });
+                        const ws = wb.Sheets[wb.SheetNames[0]];
+                        const data = XLSX.utils.sheet_to_json(ws);
+                        const firstRow = data[0] || {};
+                        const key = Object.keys(firstRow).find(k => 
+                            ['категорія', 'category', 'група', 'тип'].some(s => k.toLowerCase().includes(s))
+                        );
+                        if (!key) {
+                            alert('Колонку з категоріями не знайдено');
+                            setIsAnalyzing(false);
+                            return;
+                        }
+                        const found = [...new Set(data.map(r => r[key]?.toString().trim()).filter(Boolean))];
+                        setAnalysisResults(found.filter(c => !activeSupplier.categories.includes(c)));
+                    } catch (err) {
+                        console.error(err);
+                    } finally {
                         setIsAnalyzing(false);
-                        return;
                     }
-                    const found = [...new Set(data.map(r => r[key]?.toString().trim()).filter(Boolean))];
-                    setAnalysisResults(found.filter(c => !activeSupplier.categories.includes(c)));
-                    setIsAnalyzing(false);
                 };
                 reader.readAsBinaryString(file);
             };
@@ -159,7 +175,7 @@
                 <div className="min-h-screen flex items-center justify-center">
                     <div className="text-center">
                         <div className="w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-                        <p className="text-slate-500">Завантаження...</p>
+                        <p className="text-slate-500 font-medium">Завантаження бази даних...</p>
                     </div>
                 </div>
             );
@@ -172,9 +188,9 @@
                                 <Icon name="FileSearch" className="w-8 h-8 text-indigo-600" />
                                 Price Cloud Analyzer
                             </h1>
-                            <p className="text-slate-500">Система відстеження нових категорій</p>
+                            <p className="text-slate-500">Система автоматизації відбору категорій</p>
                         </div>
-                        <button onClick={() => setIsAddingSupplier(true)} className="bg-indigo-600 text-white px-5 py-2.5 rounded-xl flex items-center gap-2 shadow-md hover:bg-indigo-700 transition-all">
+                        <button onClick={() => setIsAddingSupplier(true)} className="bg-indigo-600 text-white px-5 py-2.5 rounded-xl flex items-center gap-2 shadow-md hover:bg-indigo-700 transition-all active:scale-95">
                             <Icon name="Plus" /> Додати постачальника
                         </button>
                     </header>
@@ -190,60 +206,78 @@
                     {activeSupplier ? (
                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                             <div className="bg-white rounded-2xl shadow-sm border p-6 flex flex-col h-[600px]">
-                                <h2 className="font-bold mb-4 flex items-center gap-2 italic text-slate-700">
-                                    <Icon name="Settings" className="text-indigo-500" /> База категорій ({activeSupplier.categories.length})
+                                <h2 className="font-bold mb-4 flex items-center justify-between italic text-slate-700">
+                                    <span className="flex items-center gap-2"><Icon name="Settings" className="text-indigo-500" /> Ваша база відборів</span>
+                                    <span className="text-xs bg-indigo-100 text-indigo-600 px-2 py-1 rounded-full not-italic">{activeSupplier.categories.length} категорій</span>
                                 </h2>
                                 <div className="flex gap-2 mb-4">
-                                    <input value={newManualCategory} onChange={e => setNewManualCategory(e.target.value)} onKeyDown={e => e.key === 'Enter' && addCategory(newManualCategory)} className="flex-1 px-4 py-2 bg-slate-50 border rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="Нова категорія..." />
-                                    <button onClick={() => addCategory(newManualCategory)} className="bg-indigo-50 text-indigo-600 p-2 rounded-xl border border-indigo-100"><Icon name="Plus" /></button>
+                                    <input value={newManualCategory} onChange={e => setNewManualCategory(e.target.value)} onKeyDown={e => e.key === 'Enter' && addCategory(newManualCategory)} className="flex-1 px-4 py-2 bg-slate-50 border rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all" placeholder="Вписати категорію вручну..." />
+                                    <button onClick={() => addCategory(newManualCategory)} className="bg-indigo-50 text-indigo-600 p-2 rounded-xl border border-indigo-100 hover:bg-indigo-100 transition-colors"><Icon name="Plus" /></button>
                                 </div>
                                 <div className="flex-1 overflow-y-auto custom-scrollbar space-y-2">
-                                    {activeSupplier.categories.map(c => (
-                                        <div key={c} className="flex justify-between p-3 bg-slate-50 rounded-xl group">
-                                            <span className="text-sm">{c}</span>
-                                            <button onClick={() => removeCategory(c)} className="text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all"><Icon name="Trash2" className="w-4 h-4" /></button>
-                                        </div>
-                                    ))}
+                                    {activeSupplier.categories.length === 0 ? (
+                                        <p className="text-center text-slate-400 mt-10 text-sm">Тут з'являться ваші збережені категорії</p>
+                                    ) : (
+                                        activeSupplier.categories.map(c => (
+                                            <div key={c} className="flex justify-between p-3 bg-slate-50 border border-transparent hover:border-slate-200 rounded-xl group transition-all">
+                                                <span className="text-sm font-medium">{c}</span>
+                                                <button onClick={() => removeCategory(c)} className="text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all"><Icon name="Trash2" className="w-4 h-4" /></button>
+                                            </div>
+                                        ))
+                                    )}
                                 </div>
                             </div>
 
                             <div className="space-y-6">
                                 <div className="bg-white rounded-2xl shadow-sm border p-6">
-                                    <h2 className="font-bold mb-4 flex items-center gap-2 italic text-slate-700"><Icon name="Upload" className="text-indigo-500" /> Завантажити Excel</h2>
-                                    <div className="relative border-2 border-dashed rounded-2xl p-8 text-center hover:bg-indigo-50 transition-all group">
+                                    <h2 className="font-bold mb-4 flex items-center gap-2 italic text-slate-700"><Icon name="Upload" className="text-indigo-500" /> Аналіз нового прайсу</h2>
+                                    <div className="relative border-2 border-dashed border-slate-200 rounded-2xl p-8 text-center hover:bg-indigo-50 hover:border-indigo-300 transition-all group cursor-pointer">
                                         <input type="file" accept=".xlsx,.xls" onChange={handleFileUpload} className="absolute inset-0 opacity-0 cursor-pointer" />
                                         <Icon name="Upload" className="mx-auto mb-2 text-indigo-400 group-hover:scale-110 transition-transform" />
-                                        <p className="text-sm font-medium">Натисніть або перетягніть файл</p>
+                                        <p className="text-sm font-bold text-slate-600">Натисніть або перетягніть .xlsx файл</p>
+                                        <p className="text-xs text-slate-400 mt-1">Ми порівняємо категорії з вашою базою</p>
                                     </div>
                                 </div>
                                 <div className="bg-white rounded-2xl shadow-sm border p-6 flex flex-col min-h-[300px]">
-                                    <h2 className="font-bold mb-4 flex items-center gap-2 italic text-slate-700"><Icon name="AlertCircle" className="text-amber-500" /> Знайдено нових: {analysisResults.length}</h2>
-                                    <div className="flex-1 overflow-y-auto space-y-2">
-                                        {analysisResults.map(c => (
-                                            <div key={c} className="flex justify-between p-3 bg-amber-50 border border-amber-100 rounded-xl">
-                                                <span className="text-sm font-bold text-amber-900">{c}</span>
-                                                <button onClick={() => addCategory(c)} className="bg-amber-500 text-white p-1 rounded-lg"><Icon name="Plus" className="w-4 h-4" /></button>
-                                            </div>
-                                        ))}
+                                    <h2 className="font-bold mb-4 flex items-center gap-2 italic text-slate-700">
+                                        <Icon name="AlertCircle" className="text-amber-500" /> 
+                                        Знайдено нових: {analysisResults.length}
+                                    </h2>
+                                    <div className="flex-1 overflow-y-auto space-y-2 custom-scrollbar">
+                                        {isAnalyzing ? (
+                                            <p className="text-center text-slate-400 mt-10">Обробка файлу...</p>
+                                        ) : analysisResults.length === 0 ? (
+                                            <p className="text-center text-slate-400 mt-10 text-sm">Завантажте файл, щоб знайти категорії, яких ще немає у вашому списку</p>
+                                        ) : (
+                                            analysisResults.map(c => (
+                                                <div key={c} className="flex justify-between items-center p-3 bg-amber-50 border border-amber-100 rounded-xl hover:shadow-sm transition-shadow">
+                                                    <span className="text-sm font-bold text-amber-900">{c}</span>
+                                                    <button onClick={() => addCategory(c)} className="bg-amber-500 hover:bg-amber-600 text-white p-1.5 rounded-lg transition-colors shadow-sm"><Icon name="Plus" className="w-4 h-4" /></button>
+                                                </div>
+                                            ))
+                                        )}
                                     </div>
                                 </div>
                             </div>
                         </div>
                     ) : (
-                        <div className="text-center py-20 bg-white rounded-3xl border shadow-sm">
-                            <Icon name="Users" className="w-16 h-16 mx-auto mb-4 text-indigo-100" />
-                            <h2 className="text-xl font-bold">Створіть першого постачальника</h2>
+                        <div className="text-center py-20 bg-white rounded-3xl border shadow-sm flex flex-col items-center">
+                            <Icon name="Users" className="w-16 h-16 mb-4 text-indigo-100" />
+                            <h2 className="text-xl font-bold text-slate-800">Список постачальників порожній</h2>
+                            <p className="text-slate-400 mb-6">Додайте першого постачальника, щоб почати роботу</p>
+                            <button onClick={() => setIsAddingSupplier(true)} className="bg-indigo-600 text-white px-8 py-3 rounded-2xl font-bold shadow-lg hover:bg-indigo-700 transition-all">Створити зараз</button>
                         </div>
                     )}
 
                     {isAddingSupplier && (
-                        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+                        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fadeIn">
                             <div className="bg-white rounded-3xl p-8 w-full max-w-md shadow-2xl">
-                                <h3 className="text-xl font-bold mb-4">Назва постачальника</h3>
-                                <input autoFocus value={newSupplierName} onChange={e => setNewSupplierName(e.target.value)} className="w-full px-5 py-4 bg-slate-100 rounded-2xl mb-6 outline-none focus:ring-2 focus:ring-indigo-500 text-lg" placeholder="Наприклад: ERC" />
+                                <h3 className="text-xl font-bold mb-2">Новий постачальник</h3>
+                                <p className="text-sm text-slate-400 mb-6">Наприклад: ERC, DC Link, Юг-Контракт</p>
+                                <input autoFocus value={newSupplierName} onChange={e => setNewSupplierName(e.target.value)} onKeyDown={e => e.key === 'Enter' && addSupplier()} className="w-full px-5 py-4 bg-slate-100 rounded-2xl mb-6 outline-none focus:ring-2 focus:ring-indigo-500 text-lg transition-all" placeholder="Введіть назву..." />
                                 <div className="flex justify-end gap-4">
-                                    <button onClick={() => setIsAddingSupplier(false)} className="px-6 py-2 text-slate-400 font-bold">Скасувати</button>
-                                    <button onClick={addSupplier} className="bg-indigo-600 text-white px-8 py-3 rounded-2xl font-bold">Створити</button>
+                                    <button onClick={() => setIsAddingSupplier(false)} className="px-6 py-2 text-slate-400 font-bold hover:text-slate-600 transition-colors">Скасувати</button>
+                                    <button onClick={addSupplier} disabled={!newSupplierName.trim()} className="bg-indigo-600 text-white px-8 py-3 rounded-2xl font-bold hover:bg-indigo-700 disabled:opacity-50 transition-all shadow-md">Створити</button>
                                 </div>
                             </div>
                         </div>
@@ -252,8 +286,16 @@
             );
         };
 
-        const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<App />);
+        // Рендеримо додаток після того, як Firebase SDK завантажено
+        const checkFirebaseAndRender = () => {
+            if (window.FirebaseSDK) {
+                const root = ReactDOM.createRoot(document.getElementById('root'));
+                root.render(<App />);
+            } else {
+                setTimeout(checkFirebaseAndRender, 50);
+            }
+        };
+        checkFirebaseAndRender();
     </script>
 </body>
 </html>
