@@ -261,7 +261,11 @@
                                          analysisResults.map(c => (
                                             <div key={c} className="flex justify-between items-center p-3 bg-amber-50 border border-amber-100 rounded-xl animate-fadeIn">
                                                 <span className="text-sm font-bold text-amber-900">{c}</span>
-                                                <button onClick={() => addCategory(c)} title="Додати до бази" className="bg-indigo-600 text-white p-1.5 rounded-lg shadow-sm hover:bg-indigo-700 transition-colors"><Icon name="Check" className="w-4 h-4" /></button>
+                                                <button 
+                                                onClick={() => addCategory(c)} 
+                                                title="Додати до бази" 
+                                                className="flex items-center gap-1 bg-indigo-600 text-white px-3 py-1.5 rounded-lg shadow-sm hover:bg-indigo-700 transition-colors text-sm font-semibold">
+                                                <Icon name="Plus" className="w-4 h-4" />Додати</button>
                                             </div>
                                         ))}
                                     </div>
